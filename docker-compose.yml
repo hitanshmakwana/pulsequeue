@@ -1,0 +1,105 @@
+# PulseQueue — full local stack.
+#
+#   docker compose up --build
+#
+# Brings up Postgres, Redis, the API and three worker replicas. The dashboard is
+# served by the API at http://localhost:8000/dashboard/
+#
+# No top-level `version:` key — it has been obsolete since Compose v2 and only
+# produces a warning.
+#
+# Host ports are overridable so this file works on a machine that already has
+# something on 5432/6379/8000. Set POSTGRES_PORT / REDIS_PORT / API_PORT in a
+# local .env to remap; the defaults below are what a fresh clone gets, and the
+# container-to-container addresses never change either way.
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB: pulsequeue
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Gates dependent services: they will not start until Postgres actually
+      # accepts connections, rather than merely having a running container.
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulsequeue"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql://pulse:pulse@postgres:5432/pulsequeue
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Workers wait on this. The API owns schema creation, so gating the
+      # workers behind a healthy API makes "who creates the table" deterministic
+      # instead of a race between four processes calling create_all at once.
+      test:
+        - CMD-SHELL
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)\""
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgresql://pulse:pulse@postgres:5432/pulsequeue
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: INFO
+      # A job left RUNNING longer than this is presumed abandoned by a dead
+      # worker and reclaimed. Set low here so the crash-recovery behaviour is
+      # observable during a demo; production would use minutes, not seconds.
+      VISIBILITY_TIMEOUT: 60
+      RECOVERY_INTERVAL: 15
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    # Three independent worker processes competing for the same Redis queue.
+    # This is the concurrency claim: BZPOPMIN is atomic, so no job is ever
+    # handed to two of them.
+    deploy:
+      replicas: 3
+    # Give the SIGTERM handler time to finish the in-flight job before Docker
+    # escalates to SIGKILL. The default is 10s, which is shorter than the
+    # slowest built-in handler plus its commit.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

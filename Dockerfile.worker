@@ -1,0 +1,25 @@
+# --- PulseQueue worker image ---------------------------------------------
+# Same base and same dependency set as the API. The worker is a separate image
+# rather than the same one with a different command because they are separate
+# deployables with separate scaling characteristics: you scale workers with
+# queue depth and the API with request rate.
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+RUN useradd --create-home --uid 1000 pulse && chown -R pulse:pulse /app
+USER pulse
+
+# Exec form, not shell form. `CMD python -m ...` would run the process under
+# /bin/sh, which does not forward SIGTERM to its child — graceful shutdown
+# would never fire and every deploy would abandon an in-flight job.
+CMD ["python", "-m", "app.workers.worker"]

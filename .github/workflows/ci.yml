@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: pulse
+          POSTGRES_PASSWORD: pulse
+          POSTGRES_DB: pulsequeue
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches Dockerfile.api, Dockerfile.worker and the local venv.
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://pulse:pulse@localhost:5432/pulsequeue
+          REDIS_URL: redis://localhost:6379/0
+          # Integration tests skip themselves when Postgres is unreachable so a
+          # fresh clone stays green. In CI the database is guaranteed present,
+          # so a skip means something is broken — this turns it into a failure.
+          REQUIRE_INTEGRATION_TESTS: "1"
+        run: pytest tests/ -v
+
+  build:
+    # Proves the Quick Start actually works before anyone tries it. A README
+    # that says "docker compose up" and a compose file that does not build is
+    # the single most common broken promise in a portfolio repo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start the full stack
+        run: docker compose up -d --wait --wait-timeout 180
+
+      - name: Submit a job end to end
+        run: |
+          set -euo pipefail
+          curl -sf http://localhost:8000/health
+          JOB_ID=$(curl -sf -X POST http://localhost:8000/jobs \
+            -H "Content-Type: application/json" \
+            -d '{"job_type":"resize_image","payload":{"width":64}}' \
+            | python -c "import json,sys; print(json.load(sys.stdin)['id'])")
+          echo "submitted $JOB_ID"
+
+          # resize_image never fails, so it must reach SUCCESS. Polling rather
+          # than sleeping keeps the job fast when it is fast.
+          for _ in $(seq 1 30); do
+            STATUS=$(curl -sf "http://localhost:8000/jobs/$JOB_ID" \
+              | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+            echo "status: $STATUS"
+            [ "$STATUS" = "success" ] && exit 0
+            sleep 2
+          done
+          echo "job did not reach success in time"
+          exit 1
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,32 @@
+# --- PulseQueue API image ------------------------------------------------
+# Python 3.11 is pinned deliberately: it matches the CI runner and the local
+# development venv, so a dependency resolves to the same wheel in all three
+# places. Version skew between local and CI is a class of bug worth spending a
+# pinned base image to eliminate.
+FROM python:3.11-slim
+
+# PYTHONDONTWRITEBYTECODE — no .pyc files in a layer that is thrown away anyway.
+# PYTHONUNBUFFERED       — stdout reaches `docker logs` immediately rather than
+#                          sitting in a buffer, which matters when the thing you
+#                          are debugging is why a container is hanging.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Copy requirements before the source. Docker caches layers by content, so
+# editing a Python file re-runs only the COPY below, not the whole pip install.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Run as a non-root user. A container process that does not need root should
+# not have it, and adding the user after the install keeps the pip layer cached.
+RUN useradd --create-home --uid 1000 pulse && chown -R pulse:pulse /app
+USER pulse
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
