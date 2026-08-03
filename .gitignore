@@ -1,0 +1,21 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+load_test_results*.csv
+.DS_Store
+.idea/
+.vscode/
+# Planning docs and interview prep stay local; the four docs the README
+# links to are published. A bare `docs/` would 404 those links on GitHub.
+docs/*
+!docs/DECISIONS.md
+!docs/LEARNINGS.md
+!docs/IMPLEMENTATION.md
+!docs/RUNBOOK.md
