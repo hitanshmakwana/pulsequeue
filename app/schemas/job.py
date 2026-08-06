@@ -56,6 +56,24 @@ class JobCreate(BaseModel):
             "MAX_RETRY_ATTEMPTS server setting."
         ),
     )
+    timeout_seconds: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=3600,
+        description=(
+            "Wall-clock execution budget in seconds. The worker kills the "
+            "handler subprocess if it exceeds this limit and routes the job "
+            "through RetryService as a timeout failure. None = no limit."
+        ),
+    )
+    depends_on: list[uuid.UUID] = Field(
+        default_factory=list,
+        description=(
+            "IDs of jobs that must reach SUCCESS before this job is queued. "
+            "Supports arbitrary DAG topologies; cycles are rejected at submit "
+            "time. An empty list means no dependencies (default behaviour)."
+        ),
+    )
 
     # default_factory=dict above rather than `= {}`: a bare dict literal would
     # be a shared mutable default across every instance.
@@ -70,6 +88,8 @@ class JobResponse(BaseModel):
     priority: int
     attempts: int
     max_attempts: int
+    timeout_seconds: Optional[int] = None
+    depends_on: list[uuid.UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     result: Optional[dict[str, Any]] = None
@@ -81,6 +101,7 @@ class JobResponse(BaseModel):
 class StatsResponse(BaseModel):
     """Body of ``GET /jobs/stats`` — one count per terminal and non-terminal state."""
 
+    pending: int
     queued: int
     running: int
     success: int

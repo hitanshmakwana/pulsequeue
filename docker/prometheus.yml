@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s       # scrape every 5 seconds — fast enough to catch
+  evaluation_interval: 5s   # bursts and single-job latency spikes
+
+scrape_configs:
+  - job_name: pulsequeue
+    static_configs:
+      - targets:
+          - api:8000          # container-internal address; Prometheus resolves
+                              # "api" via Docker Compose's internal DNS
+    metrics_path: /metrics

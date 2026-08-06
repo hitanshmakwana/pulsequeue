@@ -42,3 +42,37 @@ class InvalidStateTransition(PulseQueueError):
     Example: manually retrying a job that is still RUNNING. The job state
     machine is a business rule, so it is enforced in the service layer.
     """
+
+
+class JobTimeoutError(PulseQueueError):
+    """A job handler exceeded its configured ``timeout_seconds`` budget.
+
+    Raised by the worker when ``concurrent.futures.Future.result(timeout=N)``
+    raises ``TimeoutError``. Translated into a domain exception so that
+    ``RetryService.handle_failure`` can treat it like any other failure without
+    importing ``concurrent.futures``.
+
+    The distinction from a plain ``Exception`` matters for metrics: the worker
+    records ``outcome="timeout"`` against the job type so that timeouts are
+    visible separately from business-logic failures in the Prometheus dashboard.
+    """
+
+
+class DagCycleError(PulseQueueError):
+    """A job's dependency graph contains a cycle.
+
+    Raised by ``DagService`` when a submitted job would introduce a circular
+    dependency chain. A cyclic DAG can never resolve — every job waits for
+    another that waits for it — so it is rejected at submit time rather than
+    silently deadlocking the queue.
+    """
+
+
+class UnresolvableDependency(PulseQueueError):
+    """A ``depends_on`` job ID does not exist in the database.
+
+    Raised by ``JobService.submit`` when the caller references a dep that has
+    not been submitted yet. Failing fast here prevents silent phantom deps that
+    would leave a job permanently PENDING.
+    """
+

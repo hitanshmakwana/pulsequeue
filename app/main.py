@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routers import jobs
+from app.api.routers.jobs import metrics_router, router as jobs_router
 from app.core.database import init_db
 from app.core.logging import configure_logging
 from app.websocket.stream import stream_job_updates
@@ -44,12 +44,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PulseQueue",
-    description="Distributed job queue and notification service",
-    version="1.0.0",
+    description="Distributed job queue, retry engine, DAG scheduler, and real-time notification service",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-app.include_router(jobs.router)
+app.include_router(jobs_router)
+app.include_router(metrics_router)
 
 # html=True serves index.html for the directory root, so /dashboard/ works.
 app.mount(

@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # fleet actually performs it — the rest lose the Redis lock and move on.
     recovery_interval: int = 30
 
+    # --- Email (send_email handler) -------------------------------------
+    # SMTP host and port for the send_email handler. In development, point
+    # these at a local SMTP relay (Mailhog on 1025, Postfix, etc.).
+    # In production, set to your transactional email provider's SMTP gateway.
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+
     # --- Misc -----------------------------------------------------------
     log_level: str = "INFO"
 

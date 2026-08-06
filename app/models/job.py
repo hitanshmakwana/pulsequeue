@@ -17,7 +17,7 @@ Who owns this:
 import enum
 import uuid
 
-from sqlalchemy import Column, DateTime, Index, Integer, String
+from sqlalchemy import ARRAY, Column, DateTime, Index, Integer, String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -32,18 +32,27 @@ class JobStatus(str, enum.Enum):
     JSON responses and compare equal to plain strings, which keeps the API
     contract readable without a translation layer.
 
-        QUEUED  -> RUNNING -> SUCCESS
-                      |
-                      +----> FAILED ------> (delayed re-queue) -> RUNNING
-                      |
-                      +----> DEAD_LETTER   (attempts exhausted)
+    State machine:
+
+        PENDING  → QUEUED (all deps reached SUCCESS)
+        QUEUED   → RUNNING
+        RUNNING  → SUCCESS
+                     │
+                     ├──▶ FAILED ──(retries left? backoff)──▶ QUEUED
+                     │
+                     └──▶ FAILED ──(retries exhausted)──▶ DEAD_LETTER
+
+    PENDING is introduced by the DAG feature. A job submitted with
+    ``depends_on`` is born PENDING and never touches the Redis queue until
+    ``DagService`` confirms all upstream jobs reached SUCCESS.
     """
 
-    QUEUED = "queued"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-    DEAD_LETTER = "dead_letter"
+    PENDING = "pending"      # waiting for upstream dependencies to complete
+    QUEUED = "queued"        # in the Redis ready queue, waiting for a worker
+    RUNNING = "running"      # claimed by a worker, handler is executing
+    SUCCESS = "success"      # handler returned without raising
+    FAILED = "failed"        # handler raised; retries remaining
+    DEAD_LETTER = "dead_letter"  # retries exhausted or permanent failure
 
 
 class Job(Base):
@@ -82,6 +91,22 @@ class Job(Base):
 
     attempts = Column(Integer, nullable=False, default=0)
     max_attempts = Column(Integer, nullable=False, default=3)
+
+    # Per-job wall-clock execution budget. None means "no limit", which is
+    # safe for cooperative jobs but dangerous for handlers that can hang.
+    # The worker enforces this via ProcessPoolExecutor.result(timeout=N).
+    timeout_seconds = Column(Integer, nullable=True)
+
+    # DAG dependency list: UUIDs of jobs that must reach SUCCESS before this
+    # job transitions from PENDING to QUEUED. Empty array = no dependencies,
+    # which preserves the original single-job behaviour entirely.
+    #
+    # ARRAY(UUID) stores this natively in Postgres as a typed array column
+    # rather than a JSONB blob, which lets us write crisp SQL like:
+    #   WHERE <job_id> = ANY(depends_on)
+    # to find all jobs that depend on a given job — the fan-out query
+    # DagService runs after every successful completion.
+    depends_on = Column(ARRAY(UUID(as_uuid=True)), nullable=False, server_default="{}")
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(

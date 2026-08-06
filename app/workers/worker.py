@@ -9,10 +9,23 @@ Why this file exists:
           abandoned by a dead worker
         how to talk to the queue   -> QueueService
         how to persist state       -> JobRepository
+        which deps to unblock      -> DagService
 
     Count the policy decisions in this file: there are none. That is what makes
     the retry maths unit-testable without booting a worker, and it is the thing
     to point at when someone asks what "separation of concerns" bought here.
+
+Per-job timeout
+---------------
+    Handlers run inside a ``ProcessPoolExecutor`` subprocess when
+    ``job.timeout_seconds`` is set. This is the only Python mechanism that can
+    actually preempt a handler — a thread cannot be killed from the outside, and
+    ``asyncio.wait_for`` only works for cooperative coroutines. A process can be
+    signalled, so ``future.result(timeout=N)`` gives a hard wall-clock limit.
+
+    When the timeout fires, the subprocess is abandoned (not cleanly shut down;
+    that is acceptable — the job was already going to be retried or dead-lettered
+    anyway), and a ``JobTimeoutError`` is raised into the normal failure path.
 
 Run it with::
 
@@ -25,8 +38,9 @@ import signal
 import socket
 import time
 import uuid
+from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
 from types import FrameType
-from typing import Optional
+from typing import Any, Optional
 
 # Importing this module is what runs the @job_handler decorators and populates
 # the registry. The worker deliberately does not know what is in it.
@@ -34,11 +48,21 @@ import handlers.builtin  # noqa: F401
 from app.core.clock import utcnow
 from app.core.config import settings
 from app.core.database import SessionLocal, init_db
+from app.core.exceptions import JobTimeoutError
 from app.core.logging import configure_logging
+from app.core.metrics import (
+    claim_latency_seconds,
+    dead_letter_depth,
+    delayed_depth,
+    job_duration_seconds,
+    jobs_total,
+    queue_depth,
+)
 from app.core.redis import get_redis_client
-from app.models.job import JobStatus
+from app.models.job import Job, JobStatus
 from app.registry.job_registry import get_handler, list_registered
 from app.repositories.job_repository import JobRepository
+from app.services.dag_service import DagService
 from app.services.queue_service import QueueService
 from app.services.recovery_service import RecoveryService
 from app.services.retry_service import RetryService
@@ -46,6 +70,24 @@ from app.services.retry_service import RetryService
 log = logging.getLogger(__name__)
 
 RECOVERY_LOCK = "recovery"
+
+
+def _run_handler(job_type: str, payload: dict[str, Any]) -> dict:
+    """Top-level function executed in a subprocess for timed jobs.
+
+    Must be a module-level function (not a lambda or nested function) because
+    ``ProcessPoolExecutor`` uses ``pickle`` to send it to the child process,
+    and pickle cannot serialise closures.
+
+    The child process re-imports handler modules via the normal import path, so
+    the registry is populated from scratch — which is exactly what happens when
+    you run the worker normally.
+    """
+    import handlers.builtin  # noqa: F401 — populates registry in child process
+    from app.registry.job_registry import get_handler as _get_handler
+
+    handler = _get_handler(job_type)
+    return handler(payload)
 
 
 class Worker:
@@ -97,6 +139,7 @@ class Worker:
         db = SessionLocal()
         repo = JobRepository(db)
         retry = RetryService(repo, self._queue)
+        dag = DagService(repo, self._queue)
         job = None
 
         try:
@@ -124,6 +167,13 @@ class Worker:
                 )
                 return
 
+            # --- Claim latency metric -------------------------------------
+            # created_at is the moment the job was submitted. The delta from
+            # there to now is the end-to-end queue wait time — the number that
+            # answers "how quickly does a job get picked up?".
+            claim_wait = (utcnow() - job.created_at).total_seconds()
+            claim_latency_seconds.labels(job_type=job.job_type).observe(claim_wait)
+
             repo.increment_attempts(job)
             repo.update_status(job, JobStatus.RUNNING)
             self._queue.publish_update(job_id, JobStatus.RUNNING)
@@ -148,14 +198,50 @@ class Worker:
                     list_registered(),
                 )
                 retry.handle_failure(job, exc, permanent=True)
+                jobs_total.labels(job_type=job.job_type, outcome="dead_letter").inc()
                 return
 
-            result = handler(job.payload)
-            duration = time.monotonic() - started
+            # --- Execute (with optional timeout) --------------------------
+            result = self._execute_handler(job, handler)
 
+            duration = time.monotonic() - started
             repo.update_status(job, JobStatus.SUCCESS, result=result)
             self._queue.publish_update(job_id, JobStatus.SUCCESS)
+
+            # Record metrics for a successful job.
+            job_duration_seconds.labels(
+                job_type=job.job_type, status="success"
+            ).observe(duration)
+            jobs_total.labels(job_type=job.job_type, outcome="success").inc()
+
             log.info("Job %s succeeded in %.3fs", job_id, duration)
+
+            # --- DAG fan-out: unblock downstream dependents ---------------
+            # After any SUCCESS, check if downstream PENDING jobs are now
+            # fully unblocked. This is O(downstream_count × dep_count) and
+            # runs synchronously — acceptable at this scale.
+            unblocked = dag.resolve_dependents(job_uuid)
+            if unblocked:
+                log.info(
+                    "Job %s unblocked %d downstream jobs: %s",
+                    job_id,
+                    len(unblocked),
+                    unblocked,
+                )
+
+        except JobTimeoutError as exc:
+            # Timeout is its own metric label so it is visible separately from
+            # ordinary handler failures in the Prometheus dashboard.
+            if job is not None:
+                duration = time.monotonic() - started if "started" in dir() else 0.0
+                job_duration_seconds.labels(
+                    job_type=job.job_type, status="timeout"
+                ).observe(duration)
+                jobs_total.labels(job_type=job.job_type, outcome="timeout").inc()
+                log.warning(
+                    "Job %s timed out after %ds", job_id, job.timeout_seconds
+                )
+                retry.handle_failure(job, exc)
 
         except Exception as exc:
             if job is None:
@@ -167,8 +253,18 @@ class Worker:
                 log.exception("Failed before loading job %s: %s", job_id, exc)
                 return
             log.warning("Job %s raised %s: %s", job_id, type(exc).__name__, exc)
+
+            duration = time.monotonic() - (started if "started" in dir() else time.monotonic())
+            job_duration_seconds.labels(
+                job_type=job.job_type, status="failed"
+            ).observe(duration)
+
             try:
-                retry.handle_failure(job, exc)
+                outcome = retry.handle_failure(job, exc)
+                outcome_label = (
+                    "dead_letter" if outcome == JobStatus.DEAD_LETTER else "failed"
+                )
+                jobs_total.labels(job_type=job.job_type, outcome=outcome_label).inc()
             except Exception:  # pragma: no cover - defensive
                 # If even the failure path fails (database gone), leave the job
                 # in RUNNING. RecoveryService reclaims it once the visibility
@@ -176,6 +272,53 @@ class Worker:
                 log.exception("Could not record failure for job %s", job_id)
         finally:
             db.close()
+
+    def _execute_handler(self, job: Job, handler) -> dict:
+        """Run the handler, enforcing timeout_seconds if set.
+
+        When a timeout is configured, the handler runs in a subprocess via
+        ``ProcessPoolExecutor``. This is the only reliable way to enforce a
+        wall-clock limit in Python — threads cannot be preempted from outside,
+        and asyncio only helps for cooperative code.
+
+        Without a timeout, the handler runs directly in the worker process
+        (cheaper — no pickle overhead, no subprocess fork).
+
+        Raises:
+            JobTimeoutError: the handler did not finish within ``timeout_seconds``.
+            Any exception the handler itself raises (propagated unchanged).
+        """
+        if not job.timeout_seconds:
+            return handler(job.payload)
+
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_handler, job.job_type, job.payload)
+            try:
+                return future.result(timeout=job.timeout_seconds)
+            except FuturesTimeoutError:
+                # Cancel the future (best-effort; the subprocess may still run
+                # briefly before the executor shuts down on context exit).
+                future.cancel()
+                raise JobTimeoutError(
+                    f"Job {job.id} ({job.job_type}) exceeded timeout of "
+                    f"{job.timeout_seconds}s"
+                )
+
+    # -- gauge refresh -----------------------------------------------------
+
+    def _refresh_gauges(self) -> None:
+        """Update queue-depth gauges so Prometheus always sees current values.
+
+        Prometheus scrapes these values at scrape time; they are not event-
+        driven. Refreshing them in the worker loop (before every BZPOPMIN) means
+        they lag by at most one loop iteration, which is acceptable.
+        """
+        try:
+            queue_depth.set(self._queue.queue_depth())
+            delayed_depth.set(self._queue.delayed_depth())
+            dead_letter_depth.set(self._queue.dead_letter_depth())
+        except Exception:  # pragma: no cover - Redis blip
+            pass  # stale gauges are better than a crashed worker
 
     # -- periodic recovery -------------------------------------------------
 
@@ -229,6 +372,7 @@ class Worker:
                 # behind an idle BZPOPMIN.
                 self._queue.promote_due()
                 self._maybe_run_recovery()
+                self._refresh_gauges()
 
                 # Blocks until a job arrives or the timeout expires. The
                 # timeout is what bounds how long shutdown and the recovery

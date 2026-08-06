@@ -2,8 +2,14 @@
 #
 #   docker compose up --build
 #
-# Brings up Postgres, Redis, the API and three worker replicas. The dashboard is
-# served by the API at http://localhost:8000/dashboard/
+# Brings up Postgres, Redis, the API, three worker replicas, Prometheus
+# (scraping /metrics every 5s), and Grafana (pre-loaded dashboard).
+#
+#   API:        http://localhost:8000
+#   Dashboard:  http://localhost:8000/dashboard/
+#   Metrics:    http://localhost:8000/metrics
+#   Prometheus: http://localhost:9090
+#   Grafana:    http://localhost:3000  (admin / admin)
 #
 # No top-level `version:` key — it has been obsolete since Compose v2 and only
 # produces a warning.
@@ -52,15 +58,16 @@ services:
       DATABASE_URL: postgresql://pulse:pulse@postgres:5432/pulsequeue
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: INFO
+      # Multiprocess metrics: API aggregates worker metrics from this volume.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus_multiproc
+    volumes:
+      - prometheus_data:/tmp/prometheus_multiproc
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      # Workers wait on this. The API owns schema creation, so gating the
-      # workers behind a healthy API makes "who creates the table" deterministic
-      # instead of a race between four processes calling create_all at once.
       test:
         - CMD-SHELL
         - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)\""
@@ -78,11 +85,12 @@ services:
       DATABASE_URL: postgresql://pulse:pulse@postgres:5432/pulsequeue
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: INFO
-      # A job left RUNNING longer than this is presumed abandoned by a dead
-      # worker and reclaimed. Set low here so the crash-recovery behaviour is
-      # observable during a demo; production would use minutes, not seconds.
       VISIBILITY_TIMEOUT: 60
       RECOVERY_INTERVAL: 15
+      # Multiprocess metrics: workers write to this shared volume.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus_multiproc
+    volumes:
+      - prometheus_data:/tmp/prometheus_multiproc
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,16 +98,51 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
-    # Three independent worker processes competing for the same Redis queue.
-    # This is the concurrency claim: BZPOPMIN is atomic, so no job is ever
-    # handed to two of them.
     deploy:
       replicas: 3
-    # Give the SIGTERM handler time to finish the in-flight job before Docker
-    # escalates to SIGKILL. The default is 10s, which is shorter than the
-    # slowest built-in handler plus its commit.
     stop_grace_period: 30s
+    restart: unless-stopped
+
+
+  # ---------------------------------------------------------------------------
+  # Observability stack
+  # ---------------------------------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"  # allows hot reload via POST /-/reload
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Auto-provision the Prometheus datasource and the PulseQueue dashboard.
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
 volumes:
   pgdata:
+  grafana_data:
+  prometheus_data:
+

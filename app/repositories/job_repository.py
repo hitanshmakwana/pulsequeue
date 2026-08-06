@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,8 +38,15 @@ class JobRepository:
         priority: int,
         idempotency_key: Optional[str],
         max_attempts: int,
+        timeout_seconds: Optional[int] = None,
+        depends_on: Optional[list[uuid.UUID]] = None,
+        status: JobStatus = JobStatus.QUEUED,
     ) -> Job:
         """Insert a new job row and return it.
+
+        Args:
+            status: Callers creating a DAG-dependent job pass ``PENDING`` here.
+                The default is ``QUEUED`` so existing callers need no changes.
 
         Raises:
             DuplicateIdempotencyKey: another row already holds this key. The
@@ -53,7 +60,9 @@ class JobRepository:
             priority=priority,
             idempotency_key=idempotency_key,
             max_attempts=max_attempts,
-            status=JobStatus.QUEUED,
+            timeout_seconds=timeout_seconds,
+            depends_on=depends_on or [],
+            status=status,
         )
         self._db.add(job)
         try:
@@ -187,3 +196,39 @@ class JobRepository:
         for status_val, count in rows:
             counts[status_val] = count
         return counts
+
+    # -- DAG queries -------------------------------------------------------
+
+    def list_pending_dependents(self, completed_job_id: uuid.UUID) -> list[Job]:
+        """All PENDING jobs that list ``completed_job_id`` in their ``depends_on``.
+
+        Called by ``DagService`` after a job reaches SUCCESS. The result is the
+        set of downstream jobs that *might* now be unblocked — DagService then
+        checks each one to see if all its deps have succeeded.
+
+        The ``ANY()`` operator works directly on Postgres ARRAY columns without
+        needing a join table, which is why ``depends_on`` is stored as an array
+        rather than a separate ``job_dependencies`` table. The tradeoff: querying
+        "what are all the deps of job X?" is O(jobs) not O(deps), which is fine
+        at this scale but would need a join table at millions of jobs.
+        """
+        return (
+            self._db.query(Job)
+            .filter(Job.status == JobStatus.PENDING)
+            .filter(
+                text(":job_id = ANY(depends_on)").bindparams(
+                    job_id=str(completed_job_id)
+                )
+            )
+            .all()
+        )
+
+    def get_many_by_ids(self, job_ids: list[uuid.UUID]) -> list[Job]:
+        """Fetch multiple jobs by id in a single query.
+
+        Used by ``DagService`` to load all dependency rows at once rather than
+        N individual lookups.
+        """
+        if not job_ids:
+            return []
+        return self._db.query(Job).filter(Job.id.in_(job_ids)).all()

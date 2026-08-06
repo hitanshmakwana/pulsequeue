@@ -14,14 +14,22 @@ Who owns this:
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from prometheus_client import CONTENT_TYPE_LATEST
 
-from app.api.dependencies import get_job_service, get_metrics_service
-from app.core.exceptions import InvalidStateTransition, JobNotFound
+from app.api.dependencies import get_job_service, get_metrics_service, get_queue_service
+from app.core.exceptions import (
+    DagCycleError,
+    InvalidStateTransition,
+    JobNotFound,
+    UnresolvableDependency,
+)
+from app.core.metrics import dead_letter_depth, delayed_depth, queue_depth
 from app.models.job import JobStatus
 from app.schemas.job import JobCreate, JobResponse, StatsResponse
 from app.services.job_service import JobService
 from app.services.metrics_service import MetricsService
+from app.services.queue_service import QueueService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -40,8 +48,17 @@ def submit_job(
 
     Supplying an ``idempotency_key`` that has been seen before returns the
     original job untouched instead of executing the work a second time.
+
+    Supplying ``depends_on`` creates a DAG-dependent job: it is accepted as
+    PENDING and will only be enqueued once every listed dependency has reached
+    SUCCESS. Cycles and missing dependency IDs are rejected with 422.
     """
-    return svc.submit(job_in)
+    try:
+        return svc.submit(job_in)
+    except UnresolvableDependency as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except DagCycleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # Declared before /{job_id} so the literal path wins the route match. FastAPI
@@ -98,3 +115,42 @@ def retry_job(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidStateTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics endpoint
+# ---------------------------------------------------------------------------
+
+metrics_router = APIRouter(tags=["ops"])
+
+
+@metrics_router.get(
+    "/metrics",
+    summary="Prometheus metrics",
+    description=(
+        "Exposes all Prometheus instruments in the standard text format. "
+        "In multiprocess mode, aggregates metrics from all worker processes "
+        "via the shared PROMETHEUS_MULTIPROC_DIR volume. "
+        "Scraped by Prometheus every 5s."
+    ),
+)
+def prometheus_metrics(queue: QueueService = Depends(get_queue_service)) -> Response:
+    """Return Prometheus text-format metrics for scraping.
+
+    Queue-depth gauges are refreshed here on every scrape so they are always
+    current. In multiprocess mode, make_registry() reads the mmap files written
+    by every worker process and returns their union.
+    """
+    from prometheus_client import generate_latest
+
+    from app.core.metrics import make_registry
+
+    queue_depth.set(queue.queue_depth())
+    delayed_depth.set(queue.delayed_depth())
+    dead_letter_depth.set(queue.dead_letter_depth())
+
+    return Response(
+        content=generate_latest(make_registry()),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+

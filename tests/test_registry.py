@@ -72,11 +72,21 @@ def test_is_registered():
 
 
 def test_builtin_handler_returns_a_serialisable_result():
-    """A handler's return value becomes the job's JSONB result column."""
+    """A handler's return value becomes the job's JSONB result column.
+
+    ``resize_image`` now uses Pillow to perform a real in-memory resize.
+    The result contains ``output_width`` / ``output_height`` (the actual
+    dimensions of the resized image) rather than echoing the input payload.
+    """
     import json
 
     import handlers.builtin as builtin
 
     result = builtin.resize_image({"width": 100, "height": 50, "url": "a.png"})
-    assert result["width"] == 100
-    json.dumps(result)  # must not raise
+    # The handler resizes to the requested dimensions.
+    assert result["output_width"] == 100
+    assert result["output_height"] == 50
+    assert result["format"] == "JPEG"
+    assert result["output_bytes"] > 0
+    json.dumps(result)  # must not raise — result must be JSON-serialisable
+
