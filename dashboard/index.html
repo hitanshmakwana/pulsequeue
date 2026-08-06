@@ -4,64 +4,418 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PulseQueue Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --border-color: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      
+      --color-queued: #3b82f6;
+      --color-running: #eab308;
+      --color-success: #22c55e;
+      --color-failed: #ef4444;
+      --color-dead_letter: #a855f7;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e5e5e5; padding: 2rem; }
-    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; color: #fff; }
-    .subtitle { font-size: 0.8rem; color: #666; margin-bottom: 1.5rem; }
+    body { 
+      font-family: 'Inter', system-ui, sans-serif; 
+      background: var(--bg-color); 
+      color: var(--text-main); 
+      padding: 2rem;
+      min-height: 100vh;
+    }
 
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-    .stat-card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 1rem; text-align: center; }
-    .stat-card .label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
-    .stat-card .value { font-size: 2rem; font-weight: 600; margin-top: 0.25rem; font-variant-numeric: tabular-nums; }
-    .queued { color: #60a5fa; }
-    .running { color: #fbbf24; }
-    .success { color: #34d399; }
-    .failed  { color: #f87171; }
-    .dead_letter { color: #a78bfa; }
+    .dashboard-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
 
-    #feed { max-height: 400px; overflow-y: auto; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 1rem; }
-    #feed:empty::after { content: "Waiting for job activity\2026"; color: #555; font-size: 0.8rem; }
-    .event { font-size: 0.8rem; padding: 0.3rem 0; border-bottom: 1px solid #2a2a2a; font-family: ui-monospace, monospace; }
-    .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-    .dot-queued      { background: #60a5fa; }
-    .dot-running     { background: #fbbf24; }
-    .dot-success     { background: #34d399; }
-    .dot-failed      { background: #f87171; }
-    .dot-dead_letter { background: #a78bfa; }
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+    
+    h1 { font-size: 1.8rem; font-weight: 700; display: flex; align-items: center; gap: 0.75rem; }
+    .header .subtitle { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem; }
+    
+    #connection-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: 0.5rem 1rem;
+      border-radius: 9999px;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+    }
+    .status-indicator { width: 8px; height: 8px; border-radius: 50%; }
 
-    #connection-status { font-size: 0.75rem; color: #888; margin-bottom: 1rem; }
+    /* Bento Grid Layout */
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 1.5rem;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.5rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+
+    .card-title {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+
+    /* Top Stats */
+    .stats-row {
+      grid-column: span 12;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1rem;
+    }
+    
+    .stat-card {
+      text-align: center;
+      transition: transform 0.2s ease;
+    }
+    .stat-card:hover { transform: translateY(-2px); }
+    .stat-card .label { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+    .stat-card .value { font-size: 2.5rem; font-weight: 700; margin-top: 0.5rem; font-variant-numeric: tabular-nums; }
+    
+    .text-queued { color: var(--color-queued); }
+    .text-running { color: var(--color-running); }
+    .text-success { color: var(--color-success); }
+    .text-failed { color: var(--color-failed); }
+    .text-dead_letter { color: var(--color-dead_letter); }
+
+    /* Charts Row */
+    .chart-container-throughput { grid-column: span 8; height: 350px; }
+    .chart-container-distribution { grid-column: span 4; height: 350px; display: flex; flex-direction: column;}
+    .chart-wrapper { flex: 1; position: relative; width: 100%; height: 100%; }
+
+    /* Feed Row */
+    .feed-container { grid-column: span 12; display: flex; flex-direction: column; gap: 1rem; }
+    
+    .feed-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .feed-filters {
+      display: flex;
+      gap: 0.5rem;
+    }
+    
+    .filter-btn {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover { background: var(--border-color); color: var(--text-main); }
+    .filter-btn.active { background: var(--border-color); color: var(--text-main); font-weight: 500; }
+
+    .btn {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: var(--border-color); }
+    .btn.paused { background: #334155; color: #ef4444; border-color: #ef4444; }
+
+    #feed {
+      height: 400px;
+      overflow-y: auto;
+      background: #0b0f19; /* Darker bg for terminal feel */
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: 'Fira Code', ui-monospace, monospace;
+    }
+    #feed:empty::after { content: "Waiting for job activity..."; color: var(--text-muted); font-size: 0.9rem; }
+    
+    .event {
+      font-size: 0.85rem;
+      padding: 0.4rem 0.5rem;
+      border-bottom: 1px dashed var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .event:last-child { border-bottom: none; }
+    .event .time { color: var(--text-muted); font-size: 0.75rem; }
+    .event .job-id { color: #cbd5e1; }
+    
+    .badge {
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-family: 'Inter', sans-serif;
+    }
+    .bg-queued { background: rgba(59, 130, 246, 0.15); color: var(--color-queued); border: 1px solid rgba(59, 130, 246, 0.3); }
+    .bg-running { background: rgba(234, 179, 8, 0.15); color: var(--color-running); border: 1px solid rgba(234, 179, 8, 0.3); }
+    .bg-success { background: rgba(34, 197, 94, 0.15); color: var(--color-success); border: 1px solid rgba(34, 197, 94, 0.3); }
+    .bg-failed { background: rgba(239, 68, 68, 0.15); color: var(--color-failed); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .bg-dead_letter { background: rgba(168, 85, 247, 0.15); color: var(--color-dead_letter); border: 1px solid rgba(168, 85, 247, 0.3); }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .stats-row { grid-template-columns: repeat(3, 1fr); }
+      .chart-container-throughput { grid-column: span 12; }
+      .chart-container-distribution { grid-column: span 12; }
+    }
+    @media (max-width: 640px) {
+      .stats-row { grid-template-columns: repeat(2, 1fr); }
+      .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-color); }
+    ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
   </style>
 </head>
 <body>
-  <h1>PulseQueue &mdash; Live Dashboard</h1>
-  <div class="subtitle">Job status streamed over WebSocket from the Redis <code>pq:updates</code> channel.</div>
-  <div id="connection-status">Connecting&hellip;</div>
+  <div class="dashboard-container">
+    <div class="header">
+      <div>
+        <h1>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-queued)"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+          PulseQueue
+        </h1>
+        <div class="subtitle">Live Job Monitoring Dashboard</div>
+      </div>
+      <div id="connection-status">
+        <div class="status-indicator" style="background: var(--text-muted)"></div>
+        <span>Connecting...</span>
+      </div>
+    </div>
 
-  <div class="stats">
-    <div class="stat-card"><div class="label">Queued</div><div class="value queued" id="s-queued">0</div></div>
-    <div class="stat-card"><div class="label">Running</div><div class="value running" id="s-running">0</div></div>
-    <div class="stat-card"><div class="label">Success</div><div class="value success" id="s-success">0</div></div>
-    <div class="stat-card"><div class="label">Failed</div><div class="value failed" id="s-failed">0</div></div>
-    <div class="stat-card"><div class="label">Dead Letter</div><div class="value dead_letter" id="s-dead_letter">0</div></div>
+    <div class="bento-grid">
+      <!-- Top Stats Row -->
+      <div class="stats-row">
+        <div class="card stat-card"><div class="label">Queued</div><div class="value text-queued" id="s-queued">0</div></div>
+        <div class="card stat-card"><div class="label">Running</div><div class="value text-running" id="s-running">0</div></div>
+        <div class="card stat-card"><div class="label">Success</div><div class="value text-success" id="s-success">0</div></div>
+        <div class="card stat-card"><div class="label">Failed</div><div class="value text-failed" id="s-failed">0</div></div>
+        <div class="card stat-card"><div class="label">Dead Letter</div><div class="value text-dead_letter" id="s-dead_letter">0</div></div>
+      </div>
+
+      <!-- Charts -->
+      <div class="card chart-container-throughput">
+        <div class="card-title">Real-time Throughput (Jobs/sec)</div>
+        <div class="chart-wrapper">
+          <canvas id="throughputChart"></canvas>
+        </div>
+      </div>
+
+      <div class="card chart-container-distribution">
+        <div class="card-title">Queue Status Distribution</div>
+        <div class="chart-wrapper" style="display: flex; justify-content: center; align-items: center;">
+          <canvas id="distributionChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Live Feed -->
+      <div class="feed-container">
+        <div class="feed-controls">
+          <div class="card-title" style="margin: 0;">Live Event Stream</div>
+          <div style="display: flex; gap: 1rem; align-items: center;">
+            <div class="feed-filters" id="status-filters">
+              <button class="filter-btn active" data-filter="all">All</button>
+              <button class="filter-btn" data-filter="queued">Queued</button>
+              <button class="filter-btn" data-filter="running">Running</button>
+              <button class="filter-btn" data-filter="success">Success</button>
+              <button class="filter-btn" data-filter="failed">Failed / DLQ</button>
+            </div>
+            <button id="pause-btn" class="btn">Pause Stream</button>
+          </div>
+        </div>
+        <div id="feed"></div>
+      </div>
+    </div>
   </div>
 
-  <div id="feed"></div>
-
   <script>
+    // --- Configuration & State -------------------------------------------
     const statusEl = document.getElementById('connection-status');
+    const indicator = statusEl.querySelector('.status-indicator');
+    const statusText = statusEl.querySelector('span');
     const feedEl = document.getElementById('feed');
+    const pauseBtn = document.getElementById('pause-btn');
     const MAX_FEED_ENTRIES = 200;
+    
+    let isPaused = false;
+    let currentFilter = 'all';
 
-    // --- Stats -----------------------------------------------------------
-    // The WebSocket feed is the low-latency signal; GET /jobs/stats is the
-    // authoritative one. Redis pub/sub has no delivery guarantee, so a dropped
-    // message must not leave the counters permanently wrong -- every event
-    // triggers a reconciling fetch.
-    //
-    // That fetch is debounced: under load the feed can deliver hundreds of
-    // events per second, and one HTTP request each would put more load on the
-    // API than the jobs themselves.
+    // Chart colors matching CSS vars
+    const colors = {
+      queued: '#3b82f6',
+      running: '#eab308',
+      success: '#22c55e',
+      failed: '#ef4444',
+      dead_letter: '#a855f7',
+      bg: '#0f172a',
+      card: '#1e293b',
+      border: '#334155',
+      text: '#94a3b8'
+    };
+
+    // Global settings for Chart.js
+    Chart.defaults.color = colors.text;
+    Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
+
+    // --- Chart.js Setup --------------------------------------------------
+    
+    // 1. Doughnut Chart (Status Distribution)
+    const ctxDist = document.getElementById('distributionChart').getContext('2d');
+    const distChart = new Chart(ctxDist, {
+      type: 'doughnut',
+      data: {
+        labels: ['Queued', 'Running', 'Success', 'Failed', 'Dead Letter'],
+        datasets: [{
+          data: [0, 0, 0, 0, 0],
+          backgroundColor: [colors.queued, colors.running, colors.success, colors.failed, colors.dead_letter],
+          borderColor: colors.card,
+          borderWidth: 2,
+          hoverOffset: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { boxWidth: 12, padding: 15 } }
+        },
+        cutout: '70%'
+      }
+    });
+
+    // 2. Line Chart (Throughput)
+    // We will keep a sliding window of the last 60 seconds
+    const THOUGHPUT_WINDOW_SECS = 60;
+    const throughputData = {
+      labels: Array(THOUGHPUT_WINDOW_SECS).fill(''),
+      datasets: [
+        {
+          label: 'Success/sec',
+          data: Array(THOUGHPUT_WINDOW_SECS).fill(0),
+          borderColor: colors.success,
+          backgroundColor: 'rgba(34, 197, 94, 0.1)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0
+        },
+        {
+          label: 'Failed/sec',
+          data: Array(THOUGHPUT_WINDOW_SECS).fill(0),
+          borderColor: colors.failed,
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0
+        }
+      ]
+    };
+
+    const ctxThroughput = document.getElementById('throughputChart').getContext('2d');
+    const throughputChart = new Chart(ctxThroughput, {
+      type: 'line',
+      data: throughputData,
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'top', align: 'end', labels: { boxWidth: 12 } },
+          tooltip: { enabled: true }
+        },
+        scales: {
+          x: { 
+            grid: { color: colors.border, display: false },
+            ticks: { maxTicksLimit: 10 }
+          },
+          y: { 
+            beginAtZero: true,
+            grid: { color: colors.border },
+            border: { display: false },
+            ticks: { precision: 0 }
+          }
+        },
+        animation: { duration: 0 } // Disable animation for smoother tick updates
+      }
+    });
+
+    // Buckets for incoming throughput data
+    let currentSecondSuccess = 0;
+    let currentSecondFailed = 0;
+
+    // Tick the chart every second
+    setInterval(() => {
+      // Shift data arrays
+      const dSuccess = throughputChart.data.datasets[0].data;
+      const dFailed = throughputChart.data.datasets[1].data;
+      
+      dSuccess.shift();
+      dFailed.shift();
+      
+      dSuccess.push(currentSecondSuccess);
+      dFailed.push(currentSecondFailed);
+      
+      // Update labels to simulate scrolling time
+      const labels = throughputChart.data.labels;
+      labels.shift();
+      const now = new Date();
+      labels.push(`${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`);
+
+      throughputChart.update();
+
+      // Reset buckets for the next second
+      currentSecondSuccess = 0;
+      currentSecondFailed = 0;
+    }, 1000);
+
+
+    // --- Stats Refresh ---------------------------------------------------
     let statsTimer = null;
     function scheduleStatsRefresh(delay = 300) {
       if (statsTimer) return;
@@ -73,27 +427,99 @@
         const res = await fetch('/jobs/stats');
         if (!res.ok) return;
         const data = await res.json();
+        
+        // Update top cards
         for (const [key, val] of Object.entries(data)) {
           const el = document.getElementById(`s-${key}`);
           if (el) el.textContent = val;
         }
+
+        // Update Doughnut Chart
+        distChart.data.datasets[0].data = [
+          data.queued || 0,
+          data.running || 0,
+          data.success || 0,
+          data.failed || 0,
+          data.dead_letter || 0
+        ];
+        distChart.update();
+
       } catch (err) {
-        // Transient network failure; the next event schedules another attempt.
+        // Transient network failure
       }
     }
 
-    // --- Live feed -------------------------------------------------------
+    // --- Live Feed -------------------------------------------------------
+    pauseBtn.addEventListener('click', () => {
+      isPaused = !isPaused;
+      if (isPaused) {
+        pauseBtn.textContent = 'Resume Stream';
+        pauseBtn.classList.add('paused');
+      } else {
+        pauseBtn.textContent = 'Pause Stream';
+        pauseBtn.classList.remove('paused');
+      }
+    });
+
+    document.getElementById('status-filters').addEventListener('click', (e) => {
+      if(e.target.tagName === 'BUTTON') {
+        document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+        e.target.classList.add('active');
+        currentFilter = e.target.getAttribute('data-filter');
+        applyFilters();
+      }
+    });
+
+    function applyFilters() {
+      const events = feedEl.children;
+      for (let i = 0; i < events.length; i++) {
+        const eventStatus = events[i].getAttribute('data-status');
+        let show = true;
+        if (currentFilter === 'failed' && eventStatus !== 'failed' && eventStatus !== 'dead_letter') show = false;
+        else if (currentFilter !== 'all' && currentFilter !== 'failed' && eventStatus !== currentFilter) show = false;
+        
+        events[i].style.display = show ? 'flex' : 'none';
+      }
+    }
+
     function appendEvent(jobId, status) {
+      if (isPaused) return;
+
+      // Track for throughput chart
+      if (status === 'success') currentSecondSuccess++;
+      if (status === 'failed' || status === 'dead_letter') currentSecondFailed++;
+
       const entry = document.createElement('div');
       entry.className = 'event';
-      const dot = document.createElement('span');
-      dot.className = `status-dot dot-${status}`;
-      entry.appendChild(dot);
-      // textContent rather than innerHTML: job_id and status arrive over the
-      // network, and building markup from network data is how XSS happens.
-      entry.appendChild(document.createTextNode(
-        `${new Date().toLocaleTimeString()} — job ${jobId.slice(0, 8)}… → ${status}`
-      ));
+      entry.setAttribute('data-status', status);
+      
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'time';
+      timeSpan.textContent = new Date().toLocaleTimeString();
+
+      const jobSpan = document.createElement('span');
+      jobSpan.className = 'job-id';
+      jobSpan.textContent = `Job ${jobId.slice(0, 8)}…`;
+
+      const arrow = document.createElement('span');
+      arrow.style.color = colors.text;
+      arrow.textContent = '→';
+
+      const badgeSpan = document.createElement('span');
+      badgeSpan.className = `badge bg-${status}`;
+      badgeSpan.textContent = status.replace('_', ' ');
+
+      entry.appendChild(timeSpan);
+      entry.appendChild(jobSpan);
+      entry.appendChild(arrow);
+      entry.appendChild(badgeSpan);
+
+      // Apply current filter logic immediately
+      let show = true;
+      if (currentFilter === 'failed' && status !== 'failed' && status !== 'dead_letter') show = false;
+      else if (currentFilter !== 'all' && currentFilter !== 'failed' && status !== currentFilter) show = false;
+      if (!show) entry.style.display = 'none';
+
       feedEl.prepend(entry);
       while (feedEl.childElementCount > MAX_FEED_ENTRIES) {
         feedEl.removeChild(feedEl.lastElementChild);
@@ -104,29 +530,31 @@
     let reconnectDelay = 1000;
 
     function connect() {
-      // wss:// when the page is served over HTTPS -- a hardcoded ws:// is
-      // blocked as mixed content by every browser once this is deployed.
       const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${scheme}//${location.host}/jobs/stream`);
 
       ws.onopen = () => {
-        statusEl.textContent = '● Connected';
-        statusEl.style.color = '#34d399';
+        statusText.textContent = 'Connected';
+        indicator.style.background = colors.success;
+        indicator.style.boxShadow = `0 0 8px ${colors.success}`;
         reconnectDelay = 1000;
         refreshStats();
       };
 
       ws.onmessage = (event) => {
-        const { job_id, status } = JSON.parse(event.data);
-        appendEvent(job_id, status);
-        scheduleStatsRefresh();
+        try {
+          const { job_id, status } = JSON.parse(event.data);
+          appendEvent(job_id, status);
+          scheduleStatsRefresh();
+        } catch(e) {
+          console.error("Failed to parse websocket event", e);
+        }
       };
 
       ws.onclose = () => {
-        statusEl.textContent = `○ Disconnected — reconnecting in ${reconnectDelay / 1000}s`;
-        statusEl.style.color = '#f87171';
-        // Exponential backoff, capped. An API restart should not leave a
-        // recruiter looking at a dead page.
+        statusText.textContent = `Disconnected — reconnecting in ${reconnectDelay / 1000}s`;
+        indicator.style.background = colors.failed;
+        indicator.style.boxShadow = `0 0 8px ${colors.failed}`;
         setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, 15000);
       };
@@ -134,6 +562,7 @@
       ws.onerror = () => ws.close();
     }
 
+    // Init
     refreshStats();
     connect();
   </script>
