@@ -9,6 +9,7 @@ dependencies with::
 
 import uuid
 
+# pyrefly: ignore [missing-import]
 import pytest
 
 from app.models.job import JobStatus
