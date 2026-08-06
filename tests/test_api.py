@@ -162,7 +162,7 @@ def test_list_respects_limit(client):
 def test_stats_shape(client):
     res = client.get("/jobs/stats")
     assert res.status_code == 200
-    assert set(res.json()) == {"queued", "running", "success", "failed", "dead_letter"}
+    assert set(res.json()) == {"pending", "queued", "running", "success", "failed", "dead_letter"}
 
 
 def test_stats_counts_a_submitted_job(client, clean_jobs_table):
