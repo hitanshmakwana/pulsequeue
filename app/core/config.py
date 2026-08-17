@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     smtp_host: str = "localhost"
     smtp_port: int = 1025
 
+    # --- Google Cloud Platform (optional — leave empty for local dev) ------
+    # Set GCP_PROJECT_ID to enable the Pub/Sub intake bridge. When unset,
+    # the bridge container is a no-op and the system behaves exactly as in
+    # local development (Redis-native pipeline only).
+    gcp_project_id: str = ""
+    pubsub_topic: str = "pulsequeue-jobs"
+    pubsub_subscription: str = "pulsequeue-worker"
+    pubsub_dlq_topic: str = "pulsequeue-dlq"
+
     # --- Misc -----------------------------------------------------------
     log_level: str = "INFO"
 

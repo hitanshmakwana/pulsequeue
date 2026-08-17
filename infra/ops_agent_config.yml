@@ -1,0 +1,56 @@
+# Google Cloud Ops Agent configuration — PulseQueue
+#
+# Configures the Ops Agent to:
+#   1. Scrape Prometheus metrics from the PulseQueue API (/metrics)
+#      and export them to Cloud Monitoring as custom metrics.
+#   2. Collect Docker container logs and forward them to Cloud Logging.
+#
+# Install: copy to /etc/google-cloud-ops-agent/config.yaml on the GCE VM
+# Reload:  sudo systemctl restart google-cloud-ops-agent
+#
+# Metrics appear in Cloud Monitoring under:
+#   prometheus.googleapis.com/pulsequeue_*
+#
+# Logs appear in Cloud Logging under:
+#   logName="projects/PROJECT/logs/pulsequeue-api"
+
+logging:
+  receivers:
+    docker_logs:
+      type: files
+      include_paths:
+        - /var/lib/docker/containers/*/*-json.log
+  processors:
+    json_parse:
+      type: parse_json
+      field: message
+  exporters:
+    google_cloud_logging:
+      type: google_cloud_logging
+  service:
+    pipelines:
+      docker_pipeline:
+        receivers: [docker_logs]
+        processors: [json_parse]
+        exporters: [google_cloud_logging]
+
+metrics:
+  receivers:
+    prometheus:
+      type: prometheus
+      config:
+        scrape_configs:
+          - job_name: pulsequeue
+            scrape_interval: 15s
+            # The API container exposes /metrics on port 8000 on the VM host.
+            static_configs:
+              - targets: ["localhost:8000"]
+            metrics_path: /metrics
+  exporters:
+    google_cloud_monitoring:
+      type: google_cloud_monitoring
+  service:
+    pipelines:
+      prometheus_pipeline:
+        receivers: [prometheus]
+        exporters: [google_cloud_monitoring]

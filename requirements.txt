@@ -13,3 +13,8 @@ locust==2.29.0
 websockets==12.0
 prometheus-client==0.20.0
 Pillow==10.3.0
+# GCP: required for the Pub/Sub bridge (pubsub_bridge.py).
+# The bridge does a lazy import and exits cleanly if this is absent,
+# so local dev does not require it. Install on GCP with:
+#   pip install google-cloud-pubsub>=2.21.0
+google-cloud-pubsub>=2.21.0

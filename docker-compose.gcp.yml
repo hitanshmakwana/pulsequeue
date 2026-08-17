@@ -1,0 +1,77 @@
+# PulseQueue — GCP override for docker-compose.yml
+#
+# Usage (on the GCE VM):
+#   docker compose -f docker-compose.yml -f docker-compose.gcp.yml up -d
+#
+# This file ONLY overrides what must change for GCP:
+#   - No host port exposure for postgres/redis (not internet-facing)
+#   - Production log level
+#   - GCP environment variables injected
+#   - pubsub-bridge service added
+#   - Workload Identity used (no credential files needed on GCE VMs)
+#
+# Everything else (volumes, healthchecks, restart policies, worker replicas,
+# Prometheus, Grafana) is inherited from docker-compose.yml unchanged.
+
+services:
+
+  # -------------------------------------------------------------------------
+  # Postgres — remove host port binding on GCP (not internet-exposed)
+  # -------------------------------------------------------------------------
+  postgres:
+    ports: !reset []    # removes the host port binding from the base file
+
+  # -------------------------------------------------------------------------
+  # Redis — remove host port binding on GCP
+  # -------------------------------------------------------------------------
+  redis:
+    ports: !reset []    # removes the host port binding from the base file
+
+  # -------------------------------------------------------------------------
+  # API — GCP overrides
+  # -------------------------------------------------------------------------
+  api:
+    environment:
+      LOG_LEVEL: INFO
+      # GCP_PROJECT_ID enables the Pub/Sub bridge and GCP integrations.
+      # On a GCE VM with a service account attached, Application Default
+      # Credentials (ADC) are used automatically — no key file needed.
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      PUBSUB_TOPIC: "${PUBSUB_TOPIC:-pulsequeue-jobs}"
+      PUBSUB_SUBSCRIPTION: "${PUBSUB_SUBSCRIPTION:-pulsequeue-worker}"
+      PUBSUB_DLQ_TOPIC: "${PUBSUB_DLQ_TOPIC:-pulsequeue-dlq}"
+
+  # -------------------------------------------------------------------------
+  # Worker — GCP overrides
+  # -------------------------------------------------------------------------
+  worker:
+    environment:
+      LOG_LEVEL: INFO
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+
+  # -------------------------------------------------------------------------
+  # Pub/Sub Bridge — new service, GCP-only
+  # -------------------------------------------------------------------------
+  pubsub-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.api      # same image as API (shares requirements)
+    environment:
+      DATABASE_URL: "postgresql://pulse:pulse@postgres:5432/pulsequeue"
+      REDIS_URL: "redis://redis:6379/0"
+      GCP_PROJECT_ID: "${GCP_PROJECT_ID}"
+      PUBSUB_TOPIC: "${PUBSUB_TOPIC:-pulsequeue-jobs}"
+      PUBSUB_SUBSCRIPTION: "${PUBSUB_SUBSCRIPTION:-pulsequeue-worker}"
+      PUBSUB_DLQ_TOPIC: "${PUBSUB_DLQ_TOPIC:-pulsequeue-dlq}"
+      API_BASE_URL: "http://api:8000"
+      LOG_LEVEL: INFO
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus_multiproc
+    volumes:
+      - prometheus_data:/tmp/prometheus_multiproc
+    depends_on:
+      api:
+        condition: service_healthy
+    # Bridge is stateless — restart on any crash.
+    restart: unless-stopped
+    # Override the CMD from the Dockerfile to run the bridge instead.
+    command: ["python", "-m", "app.services.pubsub_bridge"]
