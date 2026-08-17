@@ -323,15 +323,20 @@ def scenario_sigkill(host: str, n_jobs: int = 10) -> dict:
     print(f"{'='*60}")
 
     # Check we can reach docker
+    repo_dir = "/opt/pulsequeue/repo" if os.path.isdir("/opt/pulsequeue/repo") else None
+    if not repo_dir:
+        print("  [SKIP] /opt/pulsequeue/repo not found — run this scenario ON the VM")
+        return {"scenario": "sigkill", "skipped": True,
+                "reason": "must run on VM"}
     try:
         result = subprocess.run(
             ["docker", "compose", "ps", "--format", "json"],
-            capture_output=True, text=True, cwd="/opt/pulsequeue/repo"
+            capture_output=True, text=True, cwd=repo_dir
         )
         if result.returncode != 0:
             print("  [SKIP] docker compose not available — run this scenario ON the VM")
             return {"scenario": "sigkill", "skipped": True,
-                    "reason": "docker not available on this machine"}
+                "reason": "docker not available on this machine"}
     except FileNotFoundError:
         print("  [SKIP] docker not found — run this scenario ON the VM")
         return {"scenario": "sigkill", "skipped": True,
@@ -604,12 +609,16 @@ def scenario_scale(host: str, n_workers: int = 5, n_jobs: int = 500) -> dict:
     print(f"  Scale to {n_workers} workers, benchmark {n_jobs} jobs")
     print(f"{'='*60}")
 
+    repo_dir = "/opt/pulsequeue/repo" if os.path.isdir("/opt/pulsequeue/repo") else None
+    if not repo_dir:
+        print("  [SKIP] /opt/pulsequeue/repo not found — run this scenario ON the VM")
+        return {"scenario": "scale", "skipped": True, "reason": "must run on VM"}
     try:
         result = subprocess.run(
             ["docker", "compose", "-f", "docker-compose.yml", "-f",
              "docker-compose.gcp.yml",
              "up", "-d", "--scale", f"worker={n_workers}", "worker"],
-            capture_output=True, text=True, cwd="/opt/pulsequeue/repo"
+            capture_output=True, text=True, cwd=repo_dir
         )
         if result.returncode != 0:
             print(f"  [SKIP] docker scale failed: {result.stderr}")
